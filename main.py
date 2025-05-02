@@ -1,7 +1,6 @@
 import os
 import time
 import random
-from datetime import datetime
 from dotenv import load_dotenv
 from pymongo import MongoClient
 from pyrogram import Client, filters
@@ -21,9 +20,9 @@ mongo = MongoClient(MONGO_URI)
 db = mongo["anonchat"]
 users = db["users"]
 waiting = db["waiting"]
-reports = db["reports"]
-referrals = db["referrals"]
+config = db["config"]
 
+# Utility functions
 def generate_nickname():
     adjectives = ["Blue", "Fast", "Silent", "Bright", "Dark", "Happy", "Lazy"]
     animals = ["Tiger", "Wolf", "Lion", "Fox", "Bear", "Eagle", "Otter"]
@@ -48,28 +47,47 @@ def disconnect(uid):
         update_user(partner, {"partner": None})
     return partner
 
-def find_match(mode, user_gender, uid):
-    waiting.delete_many({"_id": uid})
-    candidates = list(waiting.find({"mode": mode}))
-    for c in candidates:
-        other_id = c["_id"]
-        other_user = get_user(other_id)
-        if not other_user or other_user.get("partner"):
-            continue
-        other_gender = other_user.get("gender")
-        if (
-            mode == "random" or
-            (mode == "male" and other_gender == "male") or
-            (mode == "female" and other_gender == "female")
-        ):
-            waiting.delete_one({"_id": other_id})
-            return other_id
-    waiting.update_one({"_id": uid}, {"$set": {"mode": mode}}, upsert=True)
-    return None
+# Force-join check
+def get_channels(premium=False):
+    key = "premium" if premium else "basic"
+    data = config.find_one({"_id": key}) or {}
+    return data.get("channels", [])
 
+def set_channels(channel_list, premium=False):
+    key = "premium" if premium else "basic"
+    config.update_one({"_id": key}, {"$set": {"channels": channel_list}}, upsert=True)
+
+async def is_member(bot, user_id, channel):
+    try:
+        member = await bot.get_chat_member(channel, user_id)
+        return member.status in ("member", "administrator", "creator")
+    except:
+        return False
+
+async def check_force_join(bot, user):
+    channels = get_channels(user.is_premium)
+    not_joined = []
+    for ch in channels:
+        if not await is_member(bot, user.id, ch):
+            not_joined.append(ch)
+    return not_joined
+
+# Bot handlers
 @app.on_message(filters.command("start"))
 async def start(client, msg):
     uid = msg.from_user.id
+    user = msg.from_user
+
+    not_joined = await check_force_join(client, user)
+    if not_joined:
+        btns = [
+            [InlineKeyboardButton(f"Join {ch.strip('@')}", url=f"https://t.me/{ch.lstrip('@')}")]
+            for ch in not_joined
+        ]
+        btns.append([InlineKeyboardButton("✅ I Joined", callback_data="check_join")])
+        await msg.reply("Please join all channels to continue:", reply_markup=InlineKeyboardMarkup(btns))
+        return
+
     if not get_user(uid).get("nickname"):
         update_user(uid, {
             "nickname": generate_nickname(),
@@ -82,22 +100,18 @@ async def start(client, msg):
         InlineKeyboardButton("♀️ Female", callback_data="gender_female")
     ]]
 
-    commands = """
-👋 Welcome to Anonymous Chat Bot!
+    await msg.reply("👋 Welcome to Anonymous Chat Bot!\nPlease select your gender:", reply_markup=InlineKeyboardMarkup(kb))
 
-You can chat with strangers anonymously based on gender.
+@app.on_callback_query(filters.regex("check_join"))
+async def recheck_join(client, cb):
+    user = cb.from_user
+    not_joined = await check_force_join(client, user)
 
-Available commands:
-/start - Restart and select gender
-/status - Check your chat status
-/stop - Disconnect from current chat
-/next - Find a new partner
-/good - Give positive feedback
-/bad - Give negative feedback
-
-Made With ❤️ By @Sr_Robots
-"""
-    await msg.reply(commands.strip(), reply_markup=InlineKeyboardMarkup(kb))
+    if not_joined:
+        await cb.answer("❌ You're still missing some channels.", show_alert=True)
+    else:
+        await cb.message.delete()
+        await start(client, cb.message)
 
 @app.on_callback_query(filters.regex("gender_"))
 async def gender_select(client, cb):
@@ -119,7 +133,7 @@ async def gender_select(client, cb):
             await cb.message.edit_text(new_text, reply_markup=InlineKeyboardMarkup(kb))
         else:
             await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(kb))
-    except Exception as e:
+    except:
         await cb.answer("Error updating message.", show_alert=True)
 
 @app.on_callback_query(filters.regex("chat_"))
@@ -141,7 +155,32 @@ async def chat_mode(client, cb):
         await client.send_photo(uid, get_avatar_url(nick2, theme2), caption=f"✅ Connected to: {nick2}", reply_markup=kb)
         await client.send_photo(match, get_avatar_url(nick1, theme1), caption=f"✅ Connected to: {nick1}", reply_markup=kb)
     else:
-        await cb.message.edit_text("⏳ Searching for a partner...")
+        try:
+            if cb.message.text.strip() != "⏳ Searching for a partner...":
+                await cb.message.edit_text("⏳ Searching for a partner...")
+            else:
+                await cb.message.edit_reply_markup(reply_markup=None)
+        except:
+            await cb.answer("Already searching...", show_alert=False)
+
+def find_match(mode, user_gender, uid):
+    waiting.delete_many({"_id": uid})
+    candidates = list(waiting.find({"mode": mode}))
+    for c in candidates:
+        other_id = c["_id"]
+        other_user = get_user(other_id)
+        if not other_user or other_user.get("partner"):
+            continue
+        other_gender = other_user.get("gender")
+        if (
+            mode == "random" or
+            (mode == "male" and other_gender == "male") or
+            (mode == "female" and other_gender == "female")
+        ):
+            waiting.delete_one({"_id": other_id})
+            return other_id
+    waiting.update_one({"_id": uid}, {"$set": {"mode": mode}}, upsert=True)
+    return None
 
 @app.on_callback_query(filters.regex("next"))
 async def next_callback(client, cb):
@@ -165,8 +204,7 @@ async def stop_chat(client, event):
     uid = event.from_user.id if hasattr(event, "from_user") else event.message.from_user.id
     partner = disconnect(uid)
     if partner:
-        await client.send_message(partner, "⚠️ Stranger has disconnected.")
-        await client.send_message(partner, "How was your chat?\n👍 /good 👎 /bad")
+        await client.send_message(partner, "⚠️ Stranger has disconnected.\nHow was your chat?\n👍 /good 👎 /bad")
     msg = "❌ Disconnected. Use /start to chat again."
     if isinstance(event, CallbackQuery):
         await event.answer(msg, show_alert=True)
@@ -187,37 +225,41 @@ async def status(client, msg):
         text += f"⌛ In queue: {q['mode']}" if q else "🪫 Not in chat or queue."
     await msg.reply(text)
 
-@app.on_message(filters.command("good"))
-@app.on_message(filters.command("bad"))
+@app.on_message(filters.command(["good", "bad"]))
 async def feedback(client, msg):
     uid = msg.from_user.id
     kind = msg.command[0]
     users.update_one({"_id": uid}, {"$inc": {f"feedback.{kind}": 1}})
     await msg.reply("✅ Feedback saved. Thank you!")
 
-@app.on_message(filters.command("clearqueue") & filters.user(ADMIN_ID))
-async def clear_queue(client, msg):
-    waiting.delete_many({})
-    await msg.reply("🧹 Queue cleared.")
+# Admin command to set required channels
+@app.on_message(filters.command("setchannels") & filters.user(ADMIN_ID))
+async def set_channels_cmd(client, msg):
+    parts = msg.text.split()
+    if len(parts) < 3:
+        await msg.reply("Usage:\n/setchannels premium @Channel1 @Channel2\n/setchannels basic @ChannelX")
+        return
+    mode = parts[1].lower()
+    channels = parts[2:]
+    if mode not in ["premium", "basic"]:
+        await msg.reply("❌ Mode must be 'premium' or 'basic'")
+        return
+    set_channels(channels, premium=(mode == "premium"))
+    await msg.reply(f"✅ {mode.capitalize()} channels updated:\n" + "\n".join(channels))
 
-@app.on_message(filters.command("online"))
-async def online(client, msg):
-    cutoff = time.time() - 600
-    count = users.count_documents({"last_active": {"$gte": cutoff}})
-    await msg.reply(f"👥 {count} users online in last 10 min.")
+@app.on_message(filters.command("getchannels") & filters.user(ADMIN_ID))
+async def get_channels_cmd(client, msg):
+    premium = get_channels(True)
+    basic = get_channels(False)
+    await msg.reply(
+        f"**Premium Users Channels:**\n" + "\n".join(premium or ["None"]) +
+        f"\n\n**Non-Premium Users Channels:**\n" + "\n".join(basic or ["None"])
+    )
 
-@app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
-async def broadcast(client, msg):
-    text = msg.text.split(" ", 1)[-1]
-    for u in users.find():
-        try:
-            await client.send_message(u["_id"], f"📢 {text}")
-        except:
-            continue
-
+# Relay messages between users
 @app.on_message(
-    filters.private & 
-    ~filters.command(["start", "stop", "next", "status", "good", "bad", "clearqueue", "online", "broadcast"])
+    filters.private &
+    ~filters.command(["start", "stop", "next", "status", "good", "bad", "setchannels", "getchannels"])
 )
 async def relay(client, msg):
     uid = msg.from_user.id
@@ -231,7 +273,6 @@ async def relay(client, msg):
 
     try:
         await client.send_chat_action(partner, ChatAction.TYPING)
-
         if msg.photo:
             await client.send_photo(partner, msg.photo.file_id, caption=msg.caption or "")
         elif msg.document and msg.document.mime_type.startswith("image/"):
@@ -240,8 +281,8 @@ async def relay(client, msg):
             await client.send_message(partner, msg.text)
         else:
             await msg.reply("⚠️ Only text and image messages are supported.")
-
     except Exception as e:
         await msg.reply(f"⚠️ Failed to forward message: {e}")
 
+# Run the bot
 app.run()
