@@ -7,7 +7,6 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
 from pyrogram.enums import ChatAction
 
-# Load environment variables
 load_dotenv()
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
@@ -57,7 +56,7 @@ async def is_member(bot, user_id, channel):
         member = await bot.get_chat_member(channel, user_id)
         return member.status in ("member", "administrator", "creator")
     except Exception as e:
-        print(f"[Membership Check Failed] User {user_id} in {channel} -> {e}")
+        print(f"[Membership Check Failed] {channel} -> {e}")
         return False
 
 async def check_force_join(bot, user):
@@ -72,13 +71,9 @@ async def check_force_join(bot, user):
 async def start(client, msg):
     uid = msg.from_user.id
     user = msg.from_user
-
     not_joined = await check_force_join(client, user)
     if not_joined:
-        btns = [
-            [InlineKeyboardButton(f"Channel #{i+1}", url=f"https://t.me/{ch.lstrip('@')}")]
-            for i, ch in enumerate(not_joined)
-        ]
+        btns = [[InlineKeyboardButton(f"Channel #{i+1}", url=f"https://t.me/{ch.lstrip('@')}")] for i, ch in enumerate(not_joined)]
         btns.append([InlineKeyboardButton("✅ I Joined", callback_data="check_join")])
         await msg.reply("Please join all channels to continue:", reply_markup=InlineKeyboardMarkup(btns))
         return
@@ -100,16 +95,14 @@ async def start(client, msg):
 async def recheck_join(client, cb):
     user = cb.from_user
     not_joined = await check_force_join(client, user)
-
     if not_joined:
-        btns = [
-            [InlineKeyboardButton(f"Channel #{i+1}", url=f"https://t.me/{ch.lstrip('@')}")]
-            for i, ch in enumerate(not_joined)
-        ]
+        btns = [[InlineKeyboardButton(f"Channel #{i+1}", url=f"https://t.me/{ch.lstrip('@')}")] for i, ch in enumerate(not_joined)]
         btns.append([InlineKeyboardButton("✅ I Joined", callback_data="check_join")])
-        await cb.message.edit("Please join all channels to continue:", reply_markup=InlineKeyboardMarkup(btns))
+        await cb.message.reply("Please join all channels to continue:", reply_markup=InlineKeyboardMarkup(btns))
+        await cb.message.delete()
     else:
         await cb.message.delete()
+        await cb.message.reply("✅ You're verified and ready to start!")
         await start(client, cb.message)
 
 @app.on_callback_query(filters.regex("gender_"))
@@ -117,22 +110,13 @@ async def gender_select(client, cb):
     gender = cb.data.split("_")[1]
     uid = cb.from_user.id
     update_user(uid, {"gender": gender, "partner": None})
-
     kb = [
         [InlineKeyboardButton("🔀 Chat with Stranger", callback_data="chat_random")],
         [InlineKeyboardButton("👨 Chat with Male", callback_data="chat_male")],
         [InlineKeyboardButton("👩 Chat with Female", callback_data="chat_female")]
     ]
-    new_text = f"Gender set as {gender.capitalize()}.\nNow choose how to chat:"
-    current_text = cb.message.text or ""
-
-    try:
-        if current_text.strip() != new_text.strip():
-            await cb.message.edit_text(new_text, reply_markup=InlineKeyboardMarkup(kb))
-        else:
-            await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(kb))
-    except:
-        await cb.answer("Error updating message.", show_alert=True)
+    await cb.message.reply(f"Gender set as {gender.capitalize()}.\nNow choose how to chat:", reply_markup=InlineKeyboardMarkup(kb))
+    await cb.message.delete()
 
 @app.on_callback_query(filters.regex("chat_"))
 async def chat_mode(client, cb):
@@ -140,35 +124,22 @@ async def chat_mode(client, cb):
     gender = get_user(uid).get("gender")
     mode = cb.data.split("_")[1]
     match = find_match(mode, gender, uid)
-
     if match:
         now = time.time()
         update_user(uid, {"partner": match, "last_active": now, "chat_started": now})
         update_user(match, {"partner": uid, "last_active": now, "chat_started": now})
-
         nick1 = get_user(uid).get("nickname")
         nick2 = get_user(match).get("nickname")
         gender1 = get_user(uid).get("gender")
         gender2 = get_user(match).get("gender")
-
         img1 = "https://i.ibb.co/fVVN6f5q/file-1540.jpg" if gender2 == "female" else "https://i.ibb.co/R43jmvtr/file-1541.jpg"
         img2 = "https://i.ibb.co/fVVN6f5q/file-1540.jpg" if gender1 == "female" else "https://i.ibb.co/R43jmvtr/file-1541.jpg"
-
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]
-        ])
-
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]])
         await client.send_photo(uid, img1, caption=f"✅ Connected to: {nick2}", reply_markup=kb)
         await client.send_photo(match, img2, caption=f"✅ Connected to: {nick1}", reply_markup=kb)
-
     else:
-        try:
-            if cb.message.text.strip() != "⏳ Searching for a partner...":
-                await cb.message.edit_text("⏳ Searching for a partner...")
-            else:
-                await cb.message.edit_reply_markup(reply_markup=None)
-        except:
-            await cb.answer("Already searching...", show_alert=False)
+        await cb.message.reply("⏳ Searching for a partner...")
+        await cb.message.delete()
 
 def find_match(mode, user_gender, uid):
     waiting.delete_many({"_id": uid})
@@ -179,11 +150,9 @@ def find_match(mode, user_gender, uid):
         if not other_user or other_user.get("partner"):
             continue
         other_gender = other_user.get("gender")
-        if (
-            mode == "random" or
+        if (mode == "random" or
             (mode == "male" and other_gender == "male") or
-            (mode == "female" and other_gender == "female")
-        ):
+            (mode == "female" and other_gender == "female")):
             waiting.delete_one({"_id": other_id})
             return other_id
     waiting.update_one({"_id": uid}, {"$set": {"mode": mode}}, upsert=True)
@@ -243,7 +212,7 @@ async def feedback(client, msg):
 async def set_channels_cmd(client, msg):
     parts = msg.text.split()
     if len(parts) < 3:
-        await msg.reply("Usage:\n/setchannels premium @ch1 @ch2\n/setchannels basic @ch3")
+        await msg.reply("Usage:\n/setchannels premium @ch1 @ch2\n/setchannels basic @chX")
         return
     mode = parts[1].lower()
     channels = parts[2:]
@@ -265,7 +234,6 @@ async def get_channels_cmd(client, msg):
 @app.on_message(filters.command("debugcheck") & filters.user(ADMIN_ID))
 async def debug_check(client, msg):
     log = []
-
     for mode in ["premium", "basic"]:
         channels = get_channels(premium=(mode == "premium"))
         log.append(f"\n🔍 Checking {mode.capitalize()} Channels:")
@@ -275,7 +243,6 @@ async def debug_check(client, msg):
                 log.append(f"✅ Bot has access to {ch}")
             except Exception as e:
                 log.append(f"❌ Cannot access {ch} — {e.__class__.__name__}: {e}")
-
     await msg.reply("\n".join(log))
 
 @app.on_message(
