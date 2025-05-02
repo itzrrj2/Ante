@@ -22,14 +22,10 @@ users = db["users"]
 waiting = db["waiting"]
 config = db["config"]
 
-# Utility functions
 def generate_nickname():
     adjectives = ["Blue", "Fast", "Silent", "Bright", "Dark", "Happy", "Lazy"]
     animals = ["Tiger", "Wolf", "Lion", "Fox", "Bear", "Eagle", "Otter"]
     return random.choice(adjectives) + random.choice(animals)
-
-def get_avatar_url(nick, theme="set2"):
-    return f"https://robohash.org/{nick}?size=200x200&set={theme}"
 
 def get_user(uid):
     return users.find_one({"_id": uid}) or {}
@@ -47,7 +43,6 @@ def disconnect(uid):
         update_user(partner, {"partner": None})
     return partner
 
-# Force-join check
 def get_channels(premium=False):
     key = "premium" if premium else "basic"
     data = config.find_one({"_id": key}) or {}
@@ -61,7 +56,8 @@ async def is_member(bot, user_id, channel):
     try:
         member = await bot.get_chat_member(channel, user_id)
         return member.status in ("member", "administrator", "creator")
-    except:
+    except Exception as e:
+        print(f"[Membership Check Failed] User {user_id} in {channel} -> {e}")
         return False
 
 async def check_force_join(bot, user):
@@ -72,7 +68,6 @@ async def check_force_join(bot, user):
             not_joined.append(ch)
     return not_joined
 
-# Bot handlers
 @app.on_message(filters.command("start"))
 async def start(client, msg):
     uid = msg.from_user.id
@@ -81,8 +76,8 @@ async def start(client, msg):
     not_joined = await check_force_join(client, user)
     if not_joined:
         btns = [
-            [InlineKeyboardButton(f"Join {ch.strip('@')}", url=f"https://t.me/{ch.lstrip('@')}")]
-            for ch in not_joined
+            [InlineKeyboardButton(f"Channel #{i+1}", url=f"https://t.me/{ch.lstrip('@')}")]
+            for i, ch in enumerate(not_joined)
         ]
         btns.append([InlineKeyboardButton("✅ I Joined", callback_data="check_join")])
         await msg.reply("Please join all channels to continue:", reply_markup=InlineKeyboardMarkup(btns))
@@ -99,7 +94,6 @@ async def start(client, msg):
         InlineKeyboardButton("♂️ Male", callback_data="gender_male"),
         InlineKeyboardButton("♀️ Female", callback_data="gender_female")
     ]]
-
     await msg.reply("👋 Welcome to Anonymous Chat Bot!\nPlease select your gender:", reply_markup=InlineKeyboardMarkup(kb))
 
 @app.on_callback_query(filters.regex("check_join"))
@@ -108,7 +102,12 @@ async def recheck_join(client, cb):
     not_joined = await check_force_join(client, user)
 
     if not_joined:
-        await cb.answer("❌ You're still missing some channels.", show_alert=True)
+        btns = [
+            [InlineKeyboardButton(f"Channel #{i+1}", url=f"https://t.me/{ch.lstrip('@')}")]
+            for i, ch in enumerate(not_joined)
+        ]
+        btns.append([InlineKeyboardButton("✅ I Joined", callback_data="check_join")])
+        await cb.message.edit("Please join all channels to continue:", reply_markup=InlineKeyboardMarkup(btns))
     else:
         await cb.message.delete()
         await start(client, cb.message)
@@ -124,7 +123,6 @@ async def gender_select(client, cb):
         [InlineKeyboardButton("👨 Chat with Male", callback_data="chat_male")],
         [InlineKeyboardButton("👩 Chat with Female", callback_data="chat_female")]
     ]
-
     new_text = f"Gender set as {gender.capitalize()}.\nNow choose how to chat:"
     current_text = cb.message.text or ""
 
@@ -142,6 +140,7 @@ async def chat_mode(client, cb):
     gender = get_user(uid).get("gender")
     mode = cb.data.split("_")[1]
     match = find_match(mode, gender, uid)
+
     if match:
         now = time.time()
         update_user(uid, {"partner": match, "last_active": now, "chat_started": now})
@@ -149,11 +148,19 @@ async def chat_mode(client, cb):
 
         nick1 = get_user(uid).get("nickname")
         nick2 = get_user(match).get("nickname")
-        theme1 = get_user(uid).get("theme", "set2")
-        theme2 = get_user(match).get("theme", "set2")
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]])
-        await client.send_photo(uid, get_avatar_url(nick2, theme2), caption=f"✅ Connected to: {nick2}", reply_markup=kb)
-        await client.send_photo(match, get_avatar_url(nick1, theme1), caption=f"✅ Connected to: {nick1}", reply_markup=kb)
+        gender1 = get_user(uid).get("gender")
+        gender2 = get_user(match).get("gender")
+
+        img1 = "https://i.ibb.co/fVVN6f5q/file-1540.jpg" if gender2 == "female" else "https://i.ibb.co/R43jmvtr/file-1541.jpg"
+        img2 = "https://i.ibb.co/fVVN6f5q/file-1540.jpg" if gender1 == "female" else "https://i.ibb.co/R43jmvtr/file-1541.jpg"
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]
+        ])
+
+        await client.send_photo(uid, img1, caption=f"✅ Connected to: {nick2}", reply_markup=kb)
+        await client.send_photo(match, img2, caption=f"✅ Connected to: {nick1}", reply_markup=kb)
+
     else:
         try:
             if cb.message.text.strip() != "⏳ Searching for a partner...":
@@ -232,12 +239,11 @@ async def feedback(client, msg):
     users.update_one({"_id": uid}, {"$inc": {f"feedback.{kind}": 1}})
     await msg.reply("✅ Feedback saved. Thank you!")
 
-# Admin command to set required channels
 @app.on_message(filters.command("setchannels") & filters.user(ADMIN_ID))
 async def set_channels_cmd(client, msg):
     parts = msg.text.split()
     if len(parts) < 3:
-        await msg.reply("Usage:\n/setchannels premium @Channel1 @Channel2\n/setchannels basic @ChannelX")
+        await msg.reply("Usage:\n/setchannels premium @ch1 @ch2\n/setchannels basic @ch3")
         return
     mode = parts[1].lower()
     channels = parts[2:]
@@ -256,21 +262,33 @@ async def get_channels_cmd(client, msg):
         f"\n\n**Non-Premium Users Channels:**\n" + "\n".join(basic or ["None"])
     )
 
-# Relay messages between users
+@app.on_message(filters.command("debugcheck") & filters.user(ADMIN_ID))
+async def debug_check(client, msg):
+    log = []
+
+    for mode in ["premium", "basic"]:
+        channels = get_channels(premium=(mode == "premium"))
+        log.append(f"\n🔍 Checking {mode.capitalize()} Channels:")
+        for ch in channels:
+            try:
+                member = await client.get_chat_member(ch, msg.from_user.id)
+                log.append(f"✅ Bot has access to {ch}")
+            except Exception as e:
+                log.append(f"❌ Cannot access {ch} — {e.__class__.__name__}: {e}")
+
+    await msg.reply("\n".join(log))
+
 @app.on_message(
     filters.private &
-    ~filters.command(["start", "stop", "next", "status", "good", "bad", "setchannels", "getchannels"])
+    ~filters.command(["start", "stop", "next", "status", "good", "bad", "setchannels", "getchannels", "debugcheck"])
 )
 async def relay(client, msg):
     uid = msg.from_user.id
     partner = get_partner(uid)
-
     if not partner:
         await msg.reply("❗ You're not in a chat.")
         return
-
     update_user(uid, {"last_active": time.time()})
-
     try:
         await client.send_chat_action(partner, ChatAction.TYPING)
         if msg.photo:
@@ -284,5 +302,4 @@ async def relay(client, msg):
     except Exception as e:
         await msg.reply(f"⚠️ Failed to forward message: {e}")
 
-# Run the bot
 app.run()
