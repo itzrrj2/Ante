@@ -7,6 +7,7 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
 from pyrogram.enums import ChatAction
 
+# Load env vars
 load_dotenv()
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
@@ -60,7 +61,9 @@ async def is_member(bot, user_id, channel):
         return False
 
 async def check_force_join(bot, user):
-    channels = get_channels(user.is_premium)
+    db_user = get_user(user.id)
+    premium = db_user.get("is_premium", False)
+    channels = get_channels(premium)
     not_joined = []
     for ch in channels:
         if not await is_member(bot, user.id, ch):
@@ -71,6 +74,7 @@ async def check_force_join(bot, user):
 async def start(client, msg):
     uid = msg.from_user.id
     user = await client.get_users(uid)
+    update_user(uid, {"is_premium": getattr(user, "is_premium", False)})
 
     not_joined = await check_force_join(client, user)
     if not_joined:
@@ -95,6 +99,7 @@ async def start(client, msg):
 @app.on_callback_query(filters.regex("check_join"))
 async def recheck_join(client, cb):
     user = await client.get_users(cb.from_user.id)
+    update_user(user.id, {"is_premium": getattr(user, "is_premium", False)})
     not_joined = await check_force_join(client, user)
 
     if not_joined:
