@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from pymongo import MongoClient
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
-from pyrogram.enums import ChatAction
+from pyrogram.enums import ChatAction, ChatMemberStatus
 
 # Load env vars
 load_dotenv()
@@ -52,22 +52,22 @@ def set_channels(channel_list, premium=False):
     key = "premium" if premium else "basic"
     config.update_one({"_id": key}, {"$set": {"channels": channel_list}}, upsert=True)
 
-async def is_member(bot, user_id, channel):
-    try:
-        member = await bot.get_chat_member(channel, user_id)
-        return member.status in ("member", "administrator", "creator")
-    except Exception as e:
-        print(f"[Membership Check Failed] {channel} -> {e}")
-        return False
-
 async def check_force_join(bot, user):
     db_user = get_user(user.id)
     premium = db_user.get("is_premium", False)
     channels = get_channels(premium)
     not_joined = []
+    
     for ch in channels:
-        if not await is_member(bot, user.id, ch):
+        try:
+            clean_ch = ch.lstrip('@')
+            member = await bot.get_chat_member(clean_ch, user.id)
+            if member.status not in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
+                not_joined.append(ch)
+        except Exception as e:
+            print(f"Error checking membership for {ch}: {str(e)}")
             not_joined.append(ch)
+    
     return not_joined
 
 @app.on_message(filters.command("start"))
@@ -99,17 +99,21 @@ async def start(client, msg):
 @app.on_callback_query(filters.regex("check_join"))
 async def recheck_join(client, cb):
     user = await client.get_users(cb.from_user.id)
-    update_user(user.id, {"is_premium": getattr(user, "is_premium", False)})
     not_joined = await check_force_join(client, user)
 
     if not_joined:
         btns = [[InlineKeyboardButton(f"Channel #{i+1}", url=f"https://t.me/{ch.lstrip('@')}")] for i, ch in enumerate(not_joined)]
         btns.append([InlineKeyboardButton("✅ I Joined", callback_data="check_join")])
-        await cb.message.reply("Please join all channels to continue:", reply_markup=InlineKeyboardMarkup(btns))
-        await cb.message.delete()
+        try:
+            await cb.message.edit_text("Please join all channels to continue:", reply_markup=InlineKeyboardMarkup(btns))
+        except:
+            await cb.message.reply("Please join all channels to continue:", reply_markup=InlineKeyboardMarkup(btns))
     else:
-        await cb.message.delete()
-        await cb.message.reply("✅ You're verified and ready to start!")
+        try:
+            await cb.message.delete()
+        except:
+            pass
+        await client.send_message(cb.from_user.id, "✅ You're verified and ready to start!")
         await start(client, cb.message)
 
 @app.on_callback_query(filters.regex("gender_"))
@@ -122,8 +126,7 @@ async def gender_select(client, cb):
         [InlineKeyboardButton("👨 Chat with Male", callback_data="chat_male")],
         [InlineKeyboardButton("👩 Chat with Female", callback_data="chat_female")]
     ]
-    await cb.message.reply(f"Gender set as {gender.capitalize()}.\nNow choose how to chat:", reply_markup=InlineKeyboardMarkup(kb))
-    await cb.message.delete()
+    await cb.message.edit_text(f"Gender set as {gender.capitalize()}.\nNow choose how to chat:", reply_markup=InlineKeyboardMarkup(kb))
 
 @app.on_callback_query(filters.regex("chat_"))
 async def chat_mode(client, cb):
@@ -152,8 +155,7 @@ async def chat_mode(client, cb):
         await client.send_photo(uid, img1, caption=f"✅ Connected to: {nick2}", reply_markup=kb)
         await client.send_photo(match, img2, caption=f"✅ Connected to: {nick1}", reply_markup=kb)
     else:
-        await cb.message.reply("⏳ Searching for a partner...")
-        await cb.message.delete()
+        await cb.message.edit_text("⏳ Searching for a partner...")
 
 def find_match(mode, user_gender, uid):
     waiting.delete_many({"_id": uid})
@@ -255,10 +257,11 @@ async def debug_check(client, msg):
         log.append(f"\n🔍 Checking {mode.capitalize()} Channels:")
         for ch in channels:
             try:
-                member = await client.get_chat_member(ch, msg.from_user.id)
-                log.append(f"✅ Bot has access to {ch}")
+                clean_ch = ch.lstrip('@')
+                member = await client.get_chat_member(clean_ch, msg.from_user.id)
+                log.append(f"✅ Bot has access to {ch} - Status: {member.status}")
             except Exception as e:
-                log.append(f"❌ Cannot access {ch} — {e.__class__.__name__}: {e}")
+                log.append(f"❌ Cannot access {ch} — {e.__class__.__name__}: {str(e)}")
     await msg.reply("\n".join(log))
 
 @app.on_message(
@@ -283,6 +286,6 @@ async def relay(client, msg):
         else:
             await msg.reply("⚠️ Only text and image messages are supported.")
     except Exception as e:
-        await msg.reply(f"⚠️ Failed to forward message: {e}")
+        await msg.reply(f"⚠️ Failed to forward message: {str(e)}")
 
 app.run()
