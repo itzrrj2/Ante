@@ -70,7 +70,8 @@ async def check_force_join(bot, user):
 @app.on_message(filters.command("start"))
 async def start(client, msg):
     uid = msg.from_user.id
-    user = msg.from_user
+    user = await client.get_users(uid)
+
     not_joined = await check_force_join(client, user)
     if not_joined:
         btns = [[InlineKeyboardButton(f"Channel #{i+1}", url=f"https://t.me/{ch.lstrip('@')}")] for i, ch in enumerate(not_joined)]
@@ -93,8 +94,9 @@ async def start(client, msg):
 
 @app.on_callback_query(filters.regex("check_join"))
 async def recheck_join(client, cb):
-    user = cb.from_user
+    user = await client.get_users(cb.from_user.id)
     not_joined = await check_force_join(client, user)
+
     if not_joined:
         btns = [[InlineKeyboardButton(f"Channel #{i+1}", url=f"https://t.me/{ch.lstrip('@')}")] for i, ch in enumerate(not_joined)]
         btns.append([InlineKeyboardButton("✅ I Joined", callback_data="check_join")])
@@ -124,17 +126,24 @@ async def chat_mode(client, cb):
     gender = get_user(uid).get("gender")
     mode = cb.data.split("_")[1]
     match = find_match(mode, gender, uid)
+
     if match:
         now = time.time()
         update_user(uid, {"partner": match, "last_active": now, "chat_started": now})
         update_user(match, {"partner": uid, "last_active": now, "chat_started": now})
+
         nick1 = get_user(uid).get("nickname")
         nick2 = get_user(match).get("nickname")
         gender1 = get_user(uid).get("gender")
         gender2 = get_user(match).get("gender")
+
         img1 = "https://i.ibb.co/fVVN6f5q/file-1540.jpg" if gender2 == "female" else "https://i.ibb.co/R43jmvtr/file-1541.jpg"
         img2 = "https://i.ibb.co/fVVN6f5q/file-1540.jpg" if gender1 == "female" else "https://i.ibb.co/R43jmvtr/file-1541.jpg"
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]])
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏭️ Next", callback_data="next"), InlineKeyboardButton("⛔ Stop", callback_data="stop")]
+        ])
+
         await client.send_photo(uid, img1, caption=f"✅ Connected to: {nick2}", reply_markup=kb)
         await client.send_photo(match, img2, caption=f"✅ Connected to: {nick1}", reply_markup=kb)
     else:
@@ -150,9 +159,11 @@ def find_match(mode, user_gender, uid):
         if not other_user or other_user.get("partner"):
             continue
         other_gender = other_user.get("gender")
-        if (mode == "random" or
+        if (
+            mode == "random" or
             (mode == "male" and other_gender == "male") or
-            (mode == "female" and other_gender == "female")):
+            (mode == "female" and other_gender == "female")
+        ):
             waiting.delete_one({"_id": other_id})
             return other_id
     waiting.update_one({"_id": uid}, {"$set": {"mode": mode}}, upsert=True)
